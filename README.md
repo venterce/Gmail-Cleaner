@@ -10,7 +10,7 @@ Create a python program that will read my gmail is mailbox and export a list of 
 # mailcleaner*
 *mailcleaner** 
 is a Python tool for managing your Gmail INBOX by exporting message headers, planning actions in a CSV file, and then automatically processing those actions (delete, star, move, export, etc.) back in your mailbox.
----## Features
+--## Features
 -**EXPORT:** Exports Gmail INBOX message headers to a CSV file (`mail_headers.csv`). The CSV includes a blank "actions" column for user planning.
 -**TEST:** Reads the CSV and shows the planned actions for each message. No changes are made to Gmail.
 - **RUN:** Reads the CSV and performs the specified actions on your Gmail mailbox:
@@ -19,9 +19,12 @@ is a Python tool for managing your Gmail INBOX by exporting message headers, pla
 - `Move to folder`: Moves the message to a specific label (edit code for your label).
 - `Export:<filepath>`: Saves the message's headers and text to the given file path.
 - `Export and Star:<filepath>`: Saves the message's headers and text and adds the “Starred” label.
-- **Error Handling:** Stops execution and closes files on error. Unknown actions are reported and skipped.-
 -
-**Summary:** After RUN, prints a summary of actions taken.-
+**Error Handling:** Stops execution and closes files on error. Unknown actions are reported and skipped.-
+-
+**Summary:** 
+
+After RUN, prints a summary of actions taken.-
 -
 -## CSV Structure Example
 | actions                   | Message-ID | Subject     | From       | To          | Date               | ... 
@@ -34,8 +37,34 @@ is a Python tool for managing your Gmail INBOX by exporting message headers, pla
 **Note:** For `Export` and `Export and Star`, the path after the colon specifies where the message details will be saved.
 -
 -
-## Usage```bashpython main.py EXPORT   # Export headers to CSV
+## Usage
+```bash
+python main.py EXPORT   # Export headers to CSV
 python main.py TEST     # Show actions to be performed (no changes made)
 python main.py RUN      # Apply actions to Gmail
 
 ![image](https://github.com/user-attachments/assets/feced8f8-51ad-44cd-a1be-d35ec31ce0c7)
+
+Gmail API Setup
+1. Visit the Gmail API Quickstart (https://developers.google.com/gmail/api/quickstart/python) and follow the steps to obtain credentials.json.
+2. Place credentials.json in your project directory.
+3. On first run, you'll be prompted in your browser to grant permission; a token.pickle will be saved for future runs.
+
+Error Handling
+- All file operations use context managers to ensure files are closed on error.
+- Any unrecoverable error (file not found, API error, etc.) causes the script to halt and print an error message.
+- Unknown actions are reported with the message ID and skipped.
+
+Security and Privacy
+- Uses OAuth2 for secure Gmail API access.
+- Does not store or transmit message content beyond what you export.
+- Only operates on your mailbox after your explicit review and planning.
+
+Extending- To add more actions, extend the ACTIONS list and update the logic in main.py.
+- To support more folders, add another CSV column for the label/folder name, or update the label ID in code.
+
+License
+MIT License.Last updated: 2025-05-21
+
+![image](https://github.com/user-attachments/assets/21da1955-b61c-43dc-8771-7bf718ff6f24)
+
