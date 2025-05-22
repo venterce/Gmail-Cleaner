@@ -5,10 +5,9 @@ import pandas as pd
 import traceback
 import base64
 
-from googleapiclient.discovery import build
+from google.cloud import gmail_v1
 from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-import pickle
+from google.oauth2.credentials import Credentials
 
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 CSV_FILENAME = 'mail_headers.csv'
@@ -21,33 +20,33 @@ ACTIONS = [
 ]
 
 def authenticate_gmail():
-    """Authenticate with Gmail API and return the service object."""
+    """Authenticate with Gmail API using the new Cloud Client library and return the client."""
     creds = None
-    if os.path.exists('token.pickle'):
-        with open('token.pickle', 'rb') as token:
-            creds = pickle.load(token)
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
             creds = flow.run_local_server(port=0)
-        with open('token.pickle', 'wb') as token:
-            pickle.dump(creds, token)
-    return build('gmail', 'v1', credentials=creds)
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+    client = gmail_v1.GmailServiceClient(credentials=creds)
+    return client
 
 def export_headers():
-    """Export Gmail INBOX message headers to a CSV file."""
-    service = authenticate_gmail()
-    results = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=1000).execute()
-    messages = results.get('messages', [])
+    """Export Gmail INBOX message headers to a CSV file using the new client."""
+    client = authenticate_gmail()
+    user = "users/me"
     all_headers = set()
     rows = []
+    messages = list(client.list_messages(parent=user, label_ids=["INBOX"], max_results=1000))
     print(f"Found {len(messages)} messages in INBOX.")
     for msg in messages:
-        msg_data = service.users().messages().get(userId='me', id=msg['id'], format='metadata').execute()
-        headers = {h['name']: h['value'] for h in msg_data['payload']['headers']}
-        headers['Message-ID'] = msg['id']
+        msg_data = client.get_message(name=msg.name, format_="METADATA")
+        headers = {h.name: h.value for h in msg_data.payload.headers}
+        headers['Message-ID'] = msg_data.id
         rows.append(headers)
         all_headers.update(headers.keys())
     all_headers = sorted(list(all_headers))
@@ -69,25 +68,26 @@ def test_actions():
 def get_message_body(msg):
     """Extract and return the plain text body from a Gmail message."""
     def extract_parts(payload):
-        if 'parts' in payload:
-            for part in payload['parts']:
-                if part.get('mimeType') == 'text/plain' and 'data' in part.get('body', {}):
-                    return base64.urlsafe_b64decode(part['body']['data']).decode('utf-8', errors='replace')
-                elif 'parts' in part:
+        if hasattr(payload, 'parts') and payload.parts:
+            for part in payload.parts:
+                if getattr(part, 'mime_type', '') == 'text/plain' and getattr(part.body, 'data', None):
+                    return base64.urlsafe_b64decode(part.body.data).decode('utf-8', errors='replace')
+                elif hasattr(part, 'parts'):
                     result = extract_parts(part)
                     if result:
                         return result
-        elif payload.get('mimeType') == 'text/plain' and 'data' in payload.get('body', {}):
-            return base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8', errors='replace')
+        elif getattr(payload, 'mime_type', '') == 'text/plain' and getattr(payload.body, 'data', None):
+            return base64.urlsafe_b64decode(payload.body.data).decode('utf-8', errors='replace')
         return ""
-    body = extract_parts(msg['payload'])
-    if not body and 'body' in msg['payload'] and 'data' in msg['payload']['body']:
-        body = base64.urlsafe_b64decode(msg['payload']['body']['data']).decode('utf-8', errors='replace')
+    body = extract_parts(msg.payload)
+    if not body and hasattr(msg.payload, 'body') and getattr(msg.payload.body, 'data', None):
+        body = base64.urlsafe_b64decode(msg.payload.body.data).decode('utf-8', errors='replace')
     return body
 
 def run_actions():
     """Read the CSV and execute actions on Gmail messages."""
-    service = authenticate_gmail()
+    client = authenticate_gmail()
+    user = "users/me"
     df = pd.read_csv(CSV_FILENAME)
     summary = {
         'Delete': 0,
@@ -106,13 +106,15 @@ def run_actions():
             if not action or not msg_id:
                 continue
 
+            msg_name = f"{user}/messages/{msg_id}"
+
             # Export and Star
             if action.lower().startswith('export and star:'):
                 _, filepath = action.split(':', 1)
                 filepath = filepath.strip()
                 try:
-                    msg = service.users().messages().get(userId='me', id=msg_id, format='full').execute()
-                    headers = {h['name']: h['value'] for h in msg['payload']['headers']}
+                    msg = client.get_message(name=msg_name, format_="FULL")
+                    headers = {h.name: h.value for h in msg.payload.headers}
                     body = get_message_body(msg)
                     os.makedirs(os.path.dirname(filepath), exist_ok=True)
                     with open(filepath, 'w', encoding='utf-8') as f:
@@ -121,7 +123,10 @@ def run_actions():
                         f.write("\n--- MESSAGE BODY ---\n")
                         f.write(body)
                     # Star the message
-                    service.users().messages().modify(userId='me', id=msg_id, body={'addLabelIds': ['STARRED']}).execute()
+                    client.modify_message(
+                        name=msg_name,
+                        add_label_ids=['STARRED']
+                    )
                     summary['Export and Star'] += 1
                     print(f"Exported and starred message {msg_id} to '{filepath}'")
                 except Exception as e:
@@ -134,8 +139,8 @@ def run_actions():
                 _, filepath = action.split(':', 1)
                 filepath = filepath.strip()
                 try:
-                    msg = service.users().messages().get(userId='me', id=msg_id, format='full').execute()
-                    headers = {h['name']: h['value'] for h in msg['payload']['headers']}
+                    msg = client.get_message(name=msg_name, format_="FULL")
+                    headers = {h.name: h.value for h in msg.payload.headers}
                     body = get_message_body(msg)
                     os.makedirs(os.path.dirname(filepath), exist_ok=True)
                     with open(filepath, 'w', encoding='utf-8') as f:
@@ -152,7 +157,7 @@ def run_actions():
 
             elif action == 'Delete':
                 try:
-                    service.users().messages().delete(userId='me', id=msg_id).execute()
+                    client.delete_message(name=msg_name)
                     summary['Delete'] += 1
                     print(f"Deleted message {msg_id}")
                 except Exception as e:
@@ -160,7 +165,10 @@ def run_actions():
                     errors += 1
             elif action == 'Star':
                 try:
-                    service.users().messages().modify(userId='me', id=msg_id, body={'addLabelIds': ['STARRED']}).execute()
+                    client.modify_message(
+                        name=msg_name,
+                        add_label_ids=['STARRED']
+                    )
                     summary['Star'] += 1
                     print(f"Starred message {msg_id}")
                 except Exception as e:
@@ -169,7 +177,11 @@ def run_actions():
             elif action == 'Move to folder':
                 try:
                     # Example: Move to 'Work' - replace 'Label_123456' with your label ID
-                    service.users().messages().modify(userId='me', id=msg_id, body={'addLabelIds': ['Label_123456'], 'removeLabelIds': ['INBOX']}).execute()
+                    client.modify_message(
+                        name=msg_name,
+                        add_label_ids=['Label_123456'],
+                        remove_label_ids=['INBOX']
+                    )
                     summary['Move to folder'] += 1
                     print(f"Moved message {msg_id} to folder/label")
                 except Exception as e:
